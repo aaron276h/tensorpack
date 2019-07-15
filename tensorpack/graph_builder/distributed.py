@@ -178,7 +178,7 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
             (host2)$ CUDA_VISIBLE_DEVICES= ./train.py --job ps --task 1
     """
 
-    def __init__(self, towers, server, aggregation_frequency):
+    def __init__(self, towers, server, aggregation_frequency, log_for_testing=True):
         """
         Args:
             towers (list[int]): list of GPU ids.
@@ -213,6 +213,12 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
 
         # Used by comm_op to know when it can begin reading aggregated values.
         self.counter = tf.ConditionalAccumulator(tf.float32)
+
+        # TODO: determine if having `tf.summary.tensor_summary` calls w/o using them
+        # negatively impacts performance.
+        self.log_for_testing = log_for_testing
+        if self.log_for_testing:
+            print("Warning: Using testing mode can negatively impact system performance.")
 
     @staticmethod
     def _apply_shadow_vars(avg_grads):
@@ -300,6 +306,7 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
         DataParallelBuilder._check_grad_list(self.grad_list)
 
         aggregation_ops_list = []
+        summary_ops = []
         if self.aggregation_frequency > 1:
             assert not self.gpu_shadow_vars
             # Create the variables which will be used to store aggregated updates.
@@ -326,6 +333,8 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                         grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                         aggregation_ops_list.append(grad_aggregator.assign_add(grad))
                         gpu_shadow_vars[idx] = (gpu_shadow_vars[idx][0], var)
+                        if self.log_for_testing:
+                            summary_ops.append(tf.summary.tensor_summary(grad_aggregation_variable_name + '_grad', grad))
         aggregation_ops = tf.group(*aggregation_ops_list)
 
         # TODO: Use tf.queue instead of ConditionalAccumulator.
@@ -351,6 +360,9 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             tower_aggregated_grads.append((grad_aggregator.read_value(), var))
                             aggregation_read_ops_list.append(tower_aggregated_grads[idx][0])
+                            if self.log_for_testing:
+                                tf.summary.tensor_summary(
+                                    grad_aggregation_variable_name + '_sum', tower_aggregated_grads[idx][0])
                     aggregated_grads.append(tower_aggregated_grads)
             aggregation_read_ops = tf.group(*aggregation_read_ops_list)
         else:
@@ -399,7 +411,10 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                 model_sync_op = self._get_sync_model_vars_op()
         else:
             model_sync_op = None
-        return train_op, communicate_op, initial_sync_op, model_sync_op
+
+        merged_summary_ops = tf.summary.merge(summary_ops)
+
+        return train_op, communicate_op, initial_sync_op, model_sync_op, merged_summary_ops
 
     def _get_grad_aggregator_variable_name(self, tower_id, variable_id):
         """
