@@ -335,16 +335,23 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                         gpu_shadow_vars[idx] = (gpu_shadow_vars[idx][0], var)
                         if self.log_for_testing:
                             summary_ops.append(tf.summary.tensor_summary(grad_aggregation_variable_name + '_grad', grad))
+                            summary_ops.append(tf.summary.tensor_summary(
+                                grad_aggregation_variable_name + '_sum', grad_aggregator.read_value()))
         aggregation_ops = tf.group(*aggregation_ops_list)
+        merged_summary_ops = tf.summary.merge(summary_ops)
+        print_compute_grad_done = tf.print("Compute grad executed, task: ", self.task_index)
 
         # TODO: Use tf.queue instead of ConditionalAccumulator.
-        with tf.control_dependencies([aggregation_ops]):
+        with tf.control_dependencies([aggregation_ops, print_compute_grad_done]):
             # Using a large local step count so that it's always bigger than global step, which is incremented
             # every time we call self.counter.take_grad().
             train_op = self.counter.apply_grad(tf.constant([1], dtype=tf.float32), local_step=990000000)
 
+        print_trying_to_read = tf.print("Trying read from counter: ", self.task_index)
+
         # Communication op begins here.
-        ready_to_communicate = self.counter.take_grad(self.aggregation_frequency)
+        with tf.control_dependencies([print_trying_to_read]):
+            ready_to_communicate = self.counter.take_grad(self.aggregation_frequency)
 
         if self.aggregation_frequency > 1:
             # Read in latest variables values.
@@ -360,9 +367,6 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             tower_aggregated_grads.append((grad_aggregator.read_value(), var))
                             aggregation_read_ops_list.append(tower_aggregated_grads[idx][0])
-                            if self.log_for_testing:
-                                tf.summary.tensor_summary(
-                                    grad_aggregation_variable_name + '_sum', tower_aggregated_grads[idx][0])
                     aggregated_grads.append(tower_aggregated_grads)
             aggregation_read_ops = tf.group(*aggregation_read_ops_list)
         else:
@@ -411,8 +415,6 @@ class DistributedReplicatedBuilder(DataParallelBuilder, DistributedBuilderBase):
                 model_sync_op = self._get_sync_model_vars_op()
         else:
             model_sync_op = None
-
-        merged_summary_ops = tf.summary.merge(summary_ops)
 
         return train_op, communicate_op, initial_sync_op, model_sync_op, merged_summary_ops
 

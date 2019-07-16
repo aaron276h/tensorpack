@@ -138,7 +138,8 @@ class Trainer(object):
     def __init__(self):
         self._callbacks = []
         self.loop = TrainLoop()
-        self.train_writer = tf.summary.FileWriter('/log')
+        self.train_writer = tf.summary.FileWriter('/logs')
+        self.log_step_counter = 0
 
     def _register_callback(self, cb):
         """
@@ -187,9 +188,9 @@ class Trainer(object):
         self.run_testing_logs()
 
     def run_testing_logs(self):
-        summary = self.hooked_sess.run(self.merged)
-        step_number = self.loop.global_step * self.loop.steps_per_epoch + self.loop.local_step
-        self.train_writer.add_summary(summary, global_step=step_number)
+        summary = self.hooked_sess.run(self.merged_summary_ops)
+        self.train_writer.add_summary(summary, global_step=self.log_step_counter)
+        self.log_step_counter += 1
         self.train_writer.flush()
 
     @call_only_once

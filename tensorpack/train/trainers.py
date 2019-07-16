@@ -286,8 +286,8 @@ class DistributedTrainerReplicated(DistributedTrainerBase):
 
     def _setup_graph(self, input, get_cost_fn, get_opt_fn):
         assert isinstance(input, FeedfreeInput), input
-        self.train_op, self.comm_op, initial_sync_op, model_sync_op, self.merged = self._builder.build(
-            self._make_get_grad_fn(input, get_cost_fn, get_opt_fn), get_opt_fn)
+        self.train_op, self.comm_op, initial_sync_op, model_sync_op, self.merged_summary_ops = \
+            self._builder.build(self._make_get_grad_fn(input, get_cost_fn, get_opt_fn), get_opt_fn)
 
         callbacks = []
         # Initial syncing vars from PS
