@@ -18,12 +18,31 @@ from config import finalize_configs
 from data import get_train_dataflow
 from eval import EvalCallback
 from modeling.generalized_rcnn import ResNetC4Model, ResNetFPNModel
+import multiprocessing
+import time
 
 
 try:
     import horovod.tensorflow as hvd
 except ImportError:
     pass
+
+session_config = tp.tfutils.get_default_sess_config()
+
+
+def run_ps(ready_event: multiprocessing.synchronize.Event, tf_cluster, task_index) -> None:
+    """
+    Run the TF parameter server task to accomodate DistributedTrainerReplicated. This is intended to
+    be run in its own process.
+    """
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    tf_server = tf.train.Server(
+        tf_cluster, job_name="ps", task_index=int(task_index), config=session_config
+    )
+
+    ready_event.set()
+    tp.DistributedTrainerReplicated([], tf_server, 1)
 
 
 if __name__ == '__main__':
@@ -37,7 +56,6 @@ if __name__ == '__main__':
     parser.add_argument('--logdir', help='log directory', default='train_log/maskrcnn')
     parser.add_argument('--config', help="A list of KEY=VALUE to overwrite those defined in config.py", nargs='+')
     parser.add_argument('--task', help="task id")
-    parser.add_argument('--job', help="ps or worker")
 
     if get_tf_version_tuple() < (1, 6):
         # https://github.com/tensorflow/tensorflow/issues/14657
@@ -126,14 +144,21 @@ if __name__ == '__main__':
         trainer = HorovodTrainer(average=False)
     else:
         # nccl mode appears faster than cpu mode
-        trainer = SyncMultiGPUTrainerReplicated(cfg.TRAIN.NUM_GPUS, average=False, mode='nccl')
-        session_config = tp.tfutils.get_default_sess_config()
+        # trainer = SyncMultiGPUTrainerReplicated(cfg.TRAIN.NUM_GPUS, average=False, mode='nccl')
         cluster = tf.train.ClusterSpec(
             {"ps": ["34.67.220.203:4000", "34.68.215.10:4000"],
              "worker": ["34.67.220.203:4001", "34.68.215.10:4001"]})
         server = tf.train.Server(
-            cluster, job_name=str(args.job), task_index=int(args.task), config=session_config
+            cluster, job_name="worker", task_index=int(args.task), config=session_config
         )
+
+        ready_event = multiprocessing.Event()
+        ps_proc = multiprocessing.get_context("spawn").Process(
+            target=run_ps, args=(ready_event, cluster, int(args.task))
+        )
+        ps_proc.start()
+        ready_event.wait()
+        time.sleep(2)
 
         trainer = tp.DistributedTrainerReplicated(8, server, 8)
 
