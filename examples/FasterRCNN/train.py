@@ -9,6 +9,8 @@ assert six.PY3, "This example requires Python 3!"
 from tensorpack import *
 from tensorpack.tfutils import collect_env_info
 from tensorpack.tfutils.common import get_tf_version_tuple
+import tensorflow as tf
+import tensorpack as tp
 
 from dataset import register_coco
 from config import config as cfg
@@ -34,6 +36,8 @@ if __name__ == '__main__':
     parser.add_argument('--load', help='load a model to start training from. Can overwrite BACKBONE.WEIGHTS')
     parser.add_argument('--logdir', help='log directory', default='train_log/maskrcnn')
     parser.add_argument('--config', help="A list of KEY=VALUE to overwrite those defined in config.py", nargs='+')
+    parser.add_argument('--task', help="task id")
+    parser.add_argument('--job', help="ps or worker")
 
     if get_tf_version_tuple() < (1, 6):
         # https://github.com/tensorflow/tensorflow/issues/14657
@@ -123,4 +127,14 @@ if __name__ == '__main__':
     else:
         # nccl mode appears faster than cpu mode
         trainer = SyncMultiGPUTrainerReplicated(cfg.TRAIN.NUM_GPUS, average=False, mode='nccl')
+        session_config = tp.tfutils.get_default_sess_config()
+        cluster = tf.train.ClusterSpec(
+            {"ps": ["34.67.220.203:4000", "34.68.215.10:4000"],
+             "worker": ["34.67.220.203:4001", "34.68.215.10:4001"]})
+        server = tf.train.Server(
+            cluster, job_name=str(args.job), task_index=int(args.task), config=session_config
+        )
+
+        trainer = tp.DistributedTrainerReplicated(8, server, 8)
+
     launch_train_with_config(traincfg, trainer)
