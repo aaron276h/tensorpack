@@ -263,6 +263,14 @@ class SingleCostTrainer(TowerTrainer):
                     varlist = ctx.get_collection_in_tower(tfv1.GraphKeys.TRAINABLE_VARIABLES)
                 else:
                     varlist = tfv1.trainable_variables()
+
+                use_fp16 = True
+                if use_fp16:
+                    loss_scale = 1024.0
+
+                    print(f'TENSORPACK_FP16 set. Using FP16 loss scaling of {loss_scale}')
+                    cost *= loss_scale
+
                 opt = get_opt_fn()
                 if is_tfv2() and isinstance(opt, tf.optimizers.Optimizer):
                     grads = opt.get_gradients(cost, varlist)
@@ -274,6 +282,10 @@ class SingleCostTrainer(TowerTrainer):
                         colocate_gradients_with_ops=self.COLOCATE_GRADIENTS_WITH_OPS,
                         aggregation_method=self.AGGREGATION_METHOD)
                 grads = FilterNoneGrad().process(grads)
+
+                if use_fp16:
+                    grads = [(g * 1.0 / loss_scale, v) for g, v in grads]
+
                 return grads
 
             if not self.XLA_COMPILE:
