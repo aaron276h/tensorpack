@@ -9,6 +9,7 @@ from tensorpack.tfutils.argscope import argscope
 from tensorpack.tfutils.scope_utils import under_name_scope
 from tensorpack.tfutils.summary import add_moving_summary
 from tensorpack.tfutils.tower import get_current_tower_context
+from tensorpack.tfutils.mixed_precision import mixed_precision_scope
 
 from config import config as cfg
 from utils.box_ops import area as tf_area
@@ -18,7 +19,7 @@ from .model_rpn import generate_rpn_proposals, rpn_losses
 
 
 @layer_register(log_shape=True)
-def fpn_model(features):
+def fpn_model(features, fp16=True):
     """
     Args:
         features ([tf.Tensor]): ResNet features c2-c5
@@ -32,8 +33,9 @@ def fpn_model(features):
     use_gn = cfg.FPN.NORM == 'GN'
 
     def upsample2x(name, x):
+        dtype_str = 'float16' if fp16 else 'float32'
         return FixedUnPooling(
-            name, x, 2, unpool_mat=np.ones((2, 2), dtype='float32'),
+            name, x, 2, unpool_mat=np.ones((2, 2), dtype=dtype_str),
             data_format='channels_first')
 
         # tf.image.resize is, again, not aligned.
@@ -44,26 +46,31 @@ def fpn_model(features):
         #     x = tf.transpose(x, [0, 3, 1, 2])
         #     return x
 
-    with argscope(Conv2D, data_format='channels_first',
-                  activation=tf.identity, use_bias=True,
-                  kernel_initializer=tf.variance_scaling_initializer(scale=1.)):
-        lat_2345 = [Conv2D('lateral_1x1_c{}'.format(i + 2), c, num_channel, 1)
-                    for i, c in enumerate(features)]
-        if use_gn:
-            lat_2345 = [GroupNorm('gn_c{}'.format(i + 2), c) for i, c in enumerate(lat_2345)]
-        lat_sum_5432 = []
-        for idx, lat in enumerate(lat_2345[::-1]):
-            if idx == 0:
-                lat_sum_5432.append(lat)
-            else:
-                lat = lat + upsample2x('upsample_lat{}'.format(6 - idx), lat_sum_5432[-1])
-                lat_sum_5432.append(lat)
-        p2345 = [Conv2D('posthoc_3x3_p{}'.format(i + 2), c, num_channel, 3)
-                 for i, c in enumerate(lat_sum_5432[::-1])]
-        if use_gn:
-            p2345 = [GroupNorm('gn_p{}'.format(i + 2), c) for i, c in enumerate(p2345)]
-        p6 = MaxPooling('maxpool_p6', p2345[-1], pool_size=1, strides=2, data_format='channels_first', padding='VALID')
-        return p2345 + [p6]
+    with mixed_precision_scope(mixed=fp16):
+        with argscope(Conv2D, data_format='channels_first',
+                      activation=tf.identity, use_bias=True,
+                      kernel_initializer=tf.variance_scaling_initializer(scale=1.)):
+            lat_2345 = [Conv2D('lateral_1x1_c{}'.format(i + 2), c, num_channel, 1)
+                        for i, c in enumerate(features)]
+            if use_gn:
+                lat_2345 = [GroupNorm('gn_c{}'.format(i + 2), c) for i, c in enumerate(lat_2345)]
+            lat_sum_5432 = []
+            for idx, lat in enumerate(lat_2345[::-1]):
+                if idx == 0:
+                    lat_sum_5432.append(lat)
+                else:
+                    lat = lat + upsample2x('upsample_lat{}'.format(6 - idx), lat_sum_5432[-1])
+                    lat_sum_5432.append(lat)
+            p2345 = [Conv2D('posthoc_3x3_p{}'.format(i + 2), c, num_channel, 3)
+                     for i, c in enumerate(lat_sum_5432[::-1])]
+            if use_gn:
+                p2345 = [GroupNorm('gn_p{}'.format(i + 2), c) for i, c in enumerate(p2345)]
+            p6 = MaxPooling('maxpool_p6', p2345[-1], pool_size=1, strides=2, data_format='channels_first', padding='VALID')
+
+            if fp16:
+                return [tf.cast(l, tf.float32) for l in p2345] + [tf.cast(p6, tf.float32)]
+
+            return p2345 + [p6]
 
 
 @under_name_scope()

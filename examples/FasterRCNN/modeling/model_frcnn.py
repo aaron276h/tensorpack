@@ -8,6 +8,7 @@ from tensorpack.tfutils.argscope import argscope
 from tensorpack.tfutils.common import get_tf_version_tuple
 from tensorpack.tfutils.scope_utils import under_name_scope
 from tensorpack.tfutils.summary import add_moving_summary
+from tensorpack.tfutils.mixed_precision import mixed_precision_scope
 from tensorpack.utils.argtools import memoized_method
 
 from config import config as cfg
@@ -253,7 +254,7 @@ FastRCNN heads for FPN:
 
 
 @layer_register(log_shape=True)
-def fastrcnn_2fc_head(feature):
+def fastrcnn_2fc_head(feature, fp16=True):
     """
     Args:
         feature (any shape):
@@ -262,9 +263,17 @@ def fastrcnn_2fc_head(feature):
         2D head feature
     """
     dim = cfg.FPN.FRCNN_FC_HEAD_DIM
-    init = tf.variance_scaling_initializer()
-    hidden = FullyConnected('fc6', feature, dim, kernel_initializer=init, activation=tf.nn.relu)
-    hidden = FullyConnected('fc7', hidden, dim, kernel_initializer=init, activation=tf.nn.relu)
+    if fp16:
+        feature = tf.cast(feature, tf.float16)
+
+    with mixed_precision_scope(mixed=fp16):
+        init = tf.variance_scaling_initializer()
+        hidden = FullyConnected('fc6', feature, dim, kernel_initializer=init, activation=tf.nn.relu)
+        hidden = FullyConnected('fc7', hidden, dim, kernel_initializer=init, activation=tf.nn.relu)
+
+    if fp16:
+        hidden = tf.cast(hidden, tf.float32)
+
     return hidden
 
 

@@ -25,6 +25,9 @@ from .model_rpn import generate_rpn_proposals, rpn_head, rpn_losses
 
 
 class GeneralizedRCNN(ModelDesc):
+    def __init__(self, fp16=True):
+        self.fp16 = fp16
+
     def preprocess(self, image):
         image = tf.expand_dims(image, 0)
         image = image_preprocess(image, bgr=True)
@@ -189,6 +192,8 @@ class ResNetC4Model(GeneralizedRCNN):
 
 
 class ResNetFPNModel(GeneralizedRCNN):
+    def __init__(self, fp16=True):
+        super(ResNetFPNModel, self).__init__(fp16)
 
     def inputs(self):
         ret = [
@@ -215,8 +220,8 @@ class ResNetFPNModel(GeneralizedRCNN):
                 anchors[i] = anchors[i].narrow_to(p23456[i])
 
     def backbone(self, image):
-        c2345 = resnet_fpn_backbone(image, cfg.BACKBONE.RESNET_NUM_BLOCKS)
-        p23456 = fpn_model('fpn', c2345)
+        c2345 = resnet_fpn_backbone(image, cfg.BACKBONE.RESNET_NUM_BLOCKS, fp16=self.fp16)
+        p23456 = fpn_model('fpn', c2345, fp16=self.fp16)
         return p23456
 
     def rpn(self, image, features, inputs):
@@ -235,7 +240,7 @@ class ResNetFPNModel(GeneralizedRCNN):
         self.slice_feature_and_anchors(features, multilevel_anchors)
 
         # Multi-Level RPN Proposals
-        rpn_outputs = [rpn_head('rpn', pi, cfg.FPN.NUM_CHANNEL, len(cfg.RPN.ANCHOR_RATIOS))
+        rpn_outputs = [rpn_head('rpn', pi, cfg.FPN.NUM_CHANNEL, len(cfg.RPN.ANCHOR_RATIOS), fp16=self.fp16)
                        for pi in features]
         multilevel_label_logits = [k[0] for k in rpn_outputs]
         multilevel_box_logits = [k[1] for k in rpn_outputs]
@@ -265,7 +270,7 @@ class ResNetFPNModel(GeneralizedRCNN):
         if not cfg.FPN.CASCADE:
             roi_feature_fastrcnn = multilevel_roi_align(features[:4], proposals.boxes, 7)
 
-            head_feature = fastrcnn_head_func('fastrcnn', roi_feature_fastrcnn)
+            head_feature = fastrcnn_head_func('fastrcnn', roi_feature_fastrcnn, fp16=self.fp16)
             fastrcnn_label_logits, fastrcnn_box_logits = fastrcnn_outputs(
                 'fastrcnn/outputs', head_feature, cfg.DATA.NUM_CATEGORY)
             fastrcnn_head = FastRCNNHead(proposals, fastrcnn_box_logits, fastrcnn_label_logits,
@@ -289,7 +294,7 @@ class ResNetFPNModel(GeneralizedRCNN):
                     name_scope='multilevel_roi_align_mask')
                 maskrcnn_head_func = getattr(model_mrcnn, cfg.FPN.MRCNN_HEAD_FUNC)
                 mask_logits = maskrcnn_head_func(
-                    'maskrcnn', roi_feature_maskrcnn, cfg.DATA.NUM_CATEGORY)   # #fg x #cat x 28 x 28
+                    'maskrcnn', roi_feature_maskrcnn, cfg.DATA.NUM_CATEGORY, fp16=self.fp16)   # #fg x #cat x 28 x 28
 
                 target_masks_for_fg = crop_and_resize(
                     tf.expand_dims(gt_masks, 1),
@@ -310,7 +315,7 @@ class ResNetFPNModel(GeneralizedRCNN):
                 roi_feature_maskrcnn = multilevel_roi_align(features[:4], final_boxes, 14)
                 maskrcnn_head_func = getattr(model_mrcnn, cfg.FPN.MRCNN_HEAD_FUNC)
                 mask_logits = maskrcnn_head_func(
-                    'maskrcnn', roi_feature_maskrcnn, cfg.DATA.NUM_CATEGORY)   # #fg x #cat x 28 x 28
+                    'maskrcnn', roi_feature_maskrcnn, cfg.DATA.NUM_CATEGORY, fp16=self.fp16)   # #fg x #cat x 28 x 28
                 indices = tf.stack([tf.range(tf.size(final_labels)), tf.cast(final_labels, tf.int32) - 1], axis=1)
                 final_mask_logits = tf.gather_nd(mask_logits, indices)   # #resultx28x28
                 tf.sigmoid(final_mask_logits, name='output/masks')
