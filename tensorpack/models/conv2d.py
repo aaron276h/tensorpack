@@ -230,8 +230,10 @@ def Conv2DTranspose(
 
         kernel_shape = shape2d(kernel_size)
         W = tf.get_variable('W', kernel_shape + [filters, channels_in], initializer=kernel_initializer)
+        W = tf.cast(W, tf.float16)
         if use_bias:
             b = tf.get_variable('b', [filters], initializer=bias_initializer)
+            b = tf.cast(b, tf.float16)
         conv = tf.nn.conv2d_transpose(
             inputs, W, out_shape_dyn,
             shape4d(strides, data_format=data_format),
