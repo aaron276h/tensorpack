@@ -427,6 +427,8 @@ class HorovodTrainer(SingleCostTrainer):
         return averaged_gradients
 
     def _setup_graph(self, input, get_cost_fn, get_opt_fn):
+        pid = os.getpid()
+        debug_var_idx = 0
         with TrainTowerContext(''):
             grads = self._make_get_grad_fn(input, get_cost_fn, get_opt_fn)()
             aggregation_ops_list = []
@@ -440,15 +442,22 @@ class HorovodTrainer(SingleCostTrainer):
                             trainable=False, initializer=tf.zeros_initializer(),
                             collections=[tf.GraphKeys.LOCAL_VARIABLES, "aggregating_collection"])
                         self.gpu_shadow_vars.append((grad_aggregation_variable, None))
+                        with tf.control_dependencies([var]):
+                            tfprint = lambda: tf.print("[pid {}]: Initialized variable {}".format(pid, debug_var_idx), "var:", var)
+                            cond_print_op_1 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
                 assert len(self.gpu_shadow_vars) == len(grads)
 
                 # Apply new gradients to aggregation variables.
-                with tf.variable_scope("aggregation_variables", reuse=True):
+                with tf.control_dependencies([cond_print_op_1]), tf.variable_scope("aggregation_variables", reuse=True):
                     for idx, (grad, var) in enumerate(grads):
                         grad_aggregation_variable_name = str(idx)
                         grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
-                        aggregation_ops_list.append(grad_aggregator.assign_add(grad))
-                        self.gpu_shadow_vars[idx] = (self.gpu_shadow_vars[idx][0], var)
+                        with tf.control_dependencies([grad_aggregator, var]):
+                            tfprint = lambda: tf.print("[pid {} Updating gradient]: Prev grad:".format(pid), grad_aggregator, "New grad:", grad, "var:", var)
+                            cond_print_op_2 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
+                        with tf.control_dependencies([cond_print_op_2]):
+                            aggregation_ops_list.append(grad_aggregator.assign_add(grad))
+                            self.gpu_shadow_vars[idx] = (self.gpu_shadow_vars[idx][0], var)
             aggregation_ops = tf.group(*aggregation_ops_list)
 
             # TODO: Use tf.queue instead of ConditionalAccumulator.
@@ -471,12 +480,15 @@ class HorovodTrainer(SingleCostTrainer):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             aggregated_grads.append((grad_aggregator.read_value(), var))
                             aggregation_read_ops_list.append(aggregated_grads[idx][0])
+                            with tf.control_dependencies([aggregated_grads[idx][0], var]):
+                                tfprint = lambda: tf.print("[pid {} Reading gradient]:".format(pid), "grad:", grad_aggregator, "var:", var)
+                                cond_print_op_3 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
                 aggregation_read_ops = tf.group(*aggregation_read_ops_list)
             else:
                 aggregated_grads = grads
                 aggregation_read_ops = ready_to_communicate
 
-            with tf.control_dependencies([aggregation_read_ops]):
+            with tf.control_dependencies([aggregation_read_ops, cond_print_op_3]):
                 avg_grads = self.allreduce(aggregated_grads)
                 opt = get_opt_fn()
                 main_fetch = opt.apply_gradients(avg_grads, name='main_fetch')
@@ -491,7 +503,12 @@ class HorovodTrainer(SingleCostTrainer):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             clear_op = grad_aggregator.assign(grad_aggregator.initial_value)
                             clear_ops_list.append(clear_op)
+                            with tf.control_dependencies([clear_op, grad_aggregator, var]):
+                                tfprint = lambda: tf.print("[pid {} Clear gradient]: grad:".format(pid), grad_aggregator, "var:", var)
+                                cond_print_op_4 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
                 self.comm_op = tf.group(*clear_ops_list)
+                with tf.control_dependencies([self.comm_op]):
+                    self.comm_op = cond_print_op_4
             else:
                 self.comm_op = main_fetch
 
