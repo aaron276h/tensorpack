@@ -456,12 +456,19 @@ class HorovodTrainer(SingleCostTrainer):
                             tfprint = lambda: tf.print("[pid {} Updating gradient]: Prev grad:".format(pid), grad_aggregator, "New grad:", grad, "var:", var)
                             cond_print_op_2 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
                         with tf.control_dependencies([cond_print_op_2]):
-                            aggregation_ops_list.append(grad_aggregator.assign_add(grad))
+                            update_op = grad_aggregator.assign_add(grad)
+                            aggregation_ops_list.append(update_op)
                             self.gpu_shadow_vars[idx] = (self.gpu_shadow_vars[idx][0], var)
+                            with tf.control_dependencies([update_op]):
+                                tfprint = lambda: tf.print("[pid {} Agg gradient]:".format(pid), grad_aggregator)
+                                update_op_print = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
             aggregation_ops = tf.group(*aggregation_ops_list)
 
+            with tf.control_dependencies([aggregation_ops, update_op_print]):
+                print_op = tf.print("[pid {}: \n\nPRINTING THE COUNTER: ".format(pid), self.counter.num_accumulated(), "\n\n\n")
+
             # TODO: Use tf.queue instead of ConditionalAccumulator.
-            with tf.control_dependencies([aggregation_ops]):
+            with tf.control_dependencies([print_op, aggregation_ops]):
                 # Using a large local step count so that it's always bigger than global step, which is incremented
                 # every time we call self.counter.take_grad().
                 self.train_op = self.counter.apply_grad(tf.constant([1], dtype=tf.float32), local_step=990000000)
@@ -469,11 +476,14 @@ class HorovodTrainer(SingleCostTrainer):
             # Communication op begins here.
             ready_to_communicate = self.counter.take_grad(self._aggregation_frequency)
 
+            with tf.control_dependencies([ready_to_communicate]):
+                print_op_2 = tf.print("[pid {}\n\nREADY_TO_COMMUNICATE: ".format(pid), ready_to_communicate, "\n\n\n")
+
             if self._aggregation_frequency > 1:
                 # Read in latest variables values.
                 aggregated_grads = []
                 aggregation_read_ops_list = []
-                with tf.control_dependencies([ready_to_communicate]):
+                with tf.control_dependencies([ready_to_communicate, print_op_2]):
                     with tf.variable_scope("aggregation_variables", reuse=True):
                         for idx, (grad, var) in enumerate(self.gpu_shadow_vars):
                             grad_aggregation_variable_name = str(idx)
@@ -490,8 +500,10 @@ class HorovodTrainer(SingleCostTrainer):
 
             with tf.control_dependencies([aggregation_read_ops, cond_print_op_3]):
                 avg_grads = self.allreduce(aggregated_grads)
+                print_op_avg_grads = tf.print("[pid {} Allreduced gradients]:".format(pid), avg_grads[0])
                 opt = get_opt_fn()
-                main_fetch = opt.apply_gradients(avg_grads, name='main_fetch')
+                with tf.control_dependencies([print_op_avg_grads]):
+                    main_fetch = opt.apply_gradients(avg_grads, name='main_fetch')
 
             # Clear gradients.
             clear_ops_list = []
@@ -506,8 +518,8 @@ class HorovodTrainer(SingleCostTrainer):
                             with tf.control_dependencies([clear_op, grad_aggregator, var]):
                                 tfprint = lambda: tf.print("[pid {} Clear gradient]: grad:".format(pid), grad_aggregator, "var:", var)
                                 cond_print_op_4 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
-                self.comm_op = tf.group(*clear_ops_list)
-                with tf.control_dependencies([self.comm_op]):
+                clear_op = tf.group(*clear_ops_list)
+                with tf.control_dependencies([clear_op]):
                     self.comm_op = cond_print_op_4
             else:
                 self.comm_op = main_fetch
