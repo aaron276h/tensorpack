@@ -366,6 +366,9 @@ class Trainer(object):
             return super(Trainer, cls).__new__(cls)
 
     def _get_aggregation_frequency(self):
+        if hasattr(self, "_aggregation_frequency"):
+            print("FOUND AGGREGATION FREQUENCY: {}".format(self._aggregation_frequency))
+            return self._aggregation_frequency
         if not hasattr(self, '_builder'):
             return 1
         if hasattr(self._builder, 'aggregation_frequency'):
