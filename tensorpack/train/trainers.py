@@ -492,7 +492,7 @@ class HorovodTrainer(SingleCostTrainer):
                             aggregation_read_ops_list.append(aggregated_grads[idx][0])
                 aggregation_read_ops = tf.group(*aggregation_read_ops_list)
             else:
-                aggregated_grads = grads
+                aggregated_grads = self.grads
                 aggregation_read_ops = ready_to_communicate
 
             with tf.control_dependencies([aggregation_read_ops]):
@@ -500,8 +500,8 @@ class HorovodTrainer(SingleCostTrainer):
                 just_grads = map(lambda tup: tup[0], avg_grads)
                 vars_list = map(lambda tup: tup[1], self.grads)
                 agg_grads = list(zip(just_grads, vars_list))
-                print_op_avg_grads = tf.print("[pid {} Allreduced gradients]:".format(pid), avg_grads[0])
                 opt = get_opt_fn()
+                print_op_avg_grads = tf.print("[pid {} Allreduced gradients]:".format(pid), avg_grads[0], "\n\nOptimizer stuff", vars(opt))
                 with tf.control_dependencies([print_op_avg_grads]):
                     main_fetch = opt.apply_gradients(agg_grads, name='main_fetch')
 
