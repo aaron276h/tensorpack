@@ -490,15 +490,12 @@ class HorovodTrainer(SingleCostTrainer):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             aggregated_grads.append((grad_aggregator.read_value(), var))
                             aggregation_read_ops_list.append(aggregated_grads[idx][0])
-                            with tf.control_dependencies([aggregated_grads[idx][0], var]):
-                                tfprint = lambda: tf.print("[pid {} Reading gradient]:".format(pid), "grad:", grad_aggregator, "var:", var)
-                                cond_print_op_3 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
                 aggregation_read_ops = tf.group(*aggregation_read_ops_list)
             else:
                 aggregated_grads = grads
                 aggregation_read_ops = ready_to_communicate
 
-            with tf.control_dependencies([aggregation_read_ops, cond_print_op_3]):
+            with tf.control_dependencies([aggregation_read_ops]):
                 avg_grads = self.allreduce(aggregated_grads)
                 print_op_avg_grads = tf.print("[pid {} Allreduced gradients]:".format(pid), avg_grads[0])
                 opt = get_opt_fn()
@@ -515,12 +512,7 @@ class HorovodTrainer(SingleCostTrainer):
                             grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
                             clear_op = grad_aggregator.assign(grad_aggregator.initial_value)
                             clear_ops_list.append(clear_op)
-                            with tf.control_dependencies([clear_op, grad_aggregator, var]):
-                                tfprint = lambda: tf.print("[pid {} Clear gradient]: grad:".format(pid), grad_aggregator, "var:", var)
-                                cond_print_op_4 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
-                clear_op = tf.group(*clear_ops_list)
-                with tf.control_dependencies([clear_op]):
-                    self.comm_op = cond_print_op_4
+                self.comm_op = tf.group(*clear_ops_list)
             else:
                 self.comm_op = main_fetch
 
