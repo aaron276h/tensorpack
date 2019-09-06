@@ -442,33 +442,23 @@ class HorovodTrainer(SingleCostTrainer):
                             trainable=False, initializer=tf.zeros_initializer(),
                             collections=[tf.GraphKeys.LOCAL_VARIABLES, "aggregating_collection"])
                         self.gpu_shadow_vars.append((grad_aggregation_variable, None))
-                        with tf.control_dependencies([var]):
-                            tfprint = lambda: tf.print()
-                            cond_print_op_1 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
+
                 assert len(self.gpu_shadow_vars) == len(self.grads)
 
                 # Apply new gradients to aggregation variables.
-                with tf.control_dependencies([cond_print_op_1]), tf.variable_scope("aggregation_variables", reuse=True):
+                with tf.variable_scope("aggregation_variables", reuse=True):
                     for idx, (grad, var) in enumerate(self.grads):
                         grad_aggregation_variable_name = str(idx)
                         grad_aggregator = tf.get_variable(grad_aggregation_variable_name)
-                        with tf.control_dependencies([grad_aggregator, var]):
-                            tfprint = lambda: tf.print()
-                            cond_print_op_2 = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
-                        with tf.control_dependencies([cond_print_op_2]):
-                            update_op = grad_aggregator.assign_add(grad)
-                            aggregation_ops_list.append(update_op)
-                            self.gpu_shadow_vars[idx] = (self.gpu_shadow_vars[idx][0], var)
-                            with tf.control_dependencies([update_op]):
-                                tfprint = lambda: tf.print()
-                                update_op_print = tf.cond(tf.equal(idx, debug_var_idx), tfprint, tf.no_op)
+                        update_op = grad_aggregator.assign_add(grad)
+                        aggregation_ops_list.append(update_op)
+                        self.gpu_shadow_vars[idx] = (self.gpu_shadow_vars[idx][0], var)
+
             aggregation_ops = tf.group(*aggregation_ops_list)
 
-            with tf.control_dependencies([aggregation_ops, update_op_print]):
-                print_op = tf.print()
 
             # TODO: Use tf.queue instead of ConditionalAccumulator.
-            with tf.control_dependencies([print_op, aggregation_ops]):
+            with tf.control_dependencies([tf.no_op(), aggregation_ops]):
                 # Using a large local step count so that it's always bigger than global step, which is incremented
                 # every time we call self.counter.take_grad().
                 self.train_op = self.counter.apply_grad(tf.constant([1], dtype=tf.float32), local_step=990000000)
@@ -476,14 +466,11 @@ class HorovodTrainer(SingleCostTrainer):
             # Communication op begins here.
             ready_to_communicate = self.counter.take_grad(self._aggregation_frequency)
 
-            with tf.control_dependencies([ready_to_communicate]):
-                print_op_2 = tf.print()
-
             if self._aggregation_frequency > 1:
                 # Read in latest variables values.
                 aggregated_grads = []
                 aggregation_read_ops_list = []
-                with tf.control_dependencies([ready_to_communicate, print_op_2]):
+                with tf.control_dependencies([ready_to_communicate]):
                     with tf.variable_scope("aggregation_variables", reuse=True):
                         for idx, (grad, var) in enumerate(self.gpu_shadow_vars):
                             grad_aggregation_variable_name = str(idx)
@@ -501,9 +488,7 @@ class HorovodTrainer(SingleCostTrainer):
                 vars_list = map(lambda tup: tup[1], self.grads)
                 agg_grads = list(zip(just_grads, vars_list))
                 opt = get_opt_fn()
-                print_op_avg_grads = tf.print()
-                with tf.control_dependencies([print_op_avg_grads]):
-                    main_fetch = opt.apply_gradients(agg_grads, name='main_fetch')
+                main_fetch = opt.apply_gradients(agg_grads, name='main_fetch')
 
             # Clear gradients.
             clear_ops_list = []
